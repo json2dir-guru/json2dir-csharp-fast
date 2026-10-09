@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>json2dir-fast</AssemblyName>
+    <RootNamespace>Json2dir</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <DebugType>none</DebugType>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <UseSharedCompilation>false</UseSharedCompilation>
+
+    <!-- Self-contained, so the apphost and the runtime come from the linux-x64 runtime pack. -->
+    <RuntimeIdentifier>linux-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+
+    <!-- ReadyToRun: precompiled code, so startup runs (almost) no JIT. The app is compiled for
+         x86-64-v3 (AVX2): the SIMD paths are precompiled too. On older CPUs the runtime rejects
+         those methods and JIT-compiles them instead, so the binary still runs correctly. -->
+    <PublishReadyToRun>true</PublishReadyToRun>
+    <PublishReadyToRunCrossgen2ExtraArgs>--instruction-set:x86-64-v3</PublishReadyToRunCrossgen2ExtraArgs>
+    <!-- Trimming is off on purpose: the SDK recompiles the trimmed System.Private.CoreLib and the
+         runtime rejects that image, which makes startup JIT-compile ~80 CoreLib methods. -->
+    <PublishTrimmed Condition="'$(PublishAot)' != 'true'">false</PublishTrimmed>
+
+    <!-- Runtime settings for a short-lived process. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <UseSystemResourceKeys>true</UseSystemResourceKeys>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <TieredPGO>false</TieredPGO>
+    <AutoreleasePoolSupport>false</AutoreleasePoolSupport>
+    <EventSourceSupport>false</EventSourceSupport>
+  </PropertyGroup>
+
+  <!-- The LTTng tracing provider is only probed for (and loads nothing useful) at startup. -->
+  <Target Name="DropTracingProvider" AfterTargets="ComputeResolvedFilesToPublishList">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="'%(Filename)%(Extension)' == 'libcoreclrtraceptprovider.so'" />
+    </ItemGroup>
+  </Target>
+
+  <!-- Static PGO: the profile collected by pgo/collect.sh guides crossgen2's code layout and inlining. -->
+  <ItemGroup Condition="Exists('pgo/json2dir-fast.mibc')">
+    <PublishReadyToRunPgoFiles Include="pgo/json2dir-fast.mibc" />
+  </ItemGroup>
+</Project>
