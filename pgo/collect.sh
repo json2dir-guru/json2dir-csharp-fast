@@ -9,7 +9,8 @@
 # dotnet-pgo is a local tool:
 #   dotnet tool install dotnet-pgo --version 10.0.0-rtm.25531.102 --tool-path <runtimes>/dotnet-tools \
 #     --add-source https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet10-transport/nuget/v3/index.json
-# Afterwards `dotnet publish` again: the csproj passes the .mibc to crossgen2.
+# Afterwards `dotnet publish` again: the csproj passes the .mibc to crossgen2 (ReadyToRun) and to
+# ILCompiler (NativeAOT). Collect from a build without a profile: dotnet publish -p:StaticPgo=false.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 app=${1:-$here/../out}/json2dir-fast
@@ -37,20 +38,25 @@ open(f"{d}/escapes.json", "w", encoding="utf-8").write(
     '{"e":"' + r'café 😀 \n\t\"' * 50000 + '","u":"' + "é€😀" * 100000 + '"}')
 EOF
 
+# One instrumented run of the app in an empty directory, stdin as given to this function.
+profile_run() {
+    mkdir "$work/t$n"
+    (cd "$work/t$n" &&
+        DOTNET_ReadyToRun=0 DOTNET_TieredPGO=1 DOTNET_TieredPGO_InstrumentOnlyHotCode=0 \
+        DOTNET_TC_CallCountThreshold=1 DOTNET_TC_CallCountingDelayMs=0 \
+        DOTNET_EnableEventPipe=1 DOTNET_EventPipeOutputPath="$work/trace$n.nettrace" \
+        DOTNET_EventPipeConfig='Microsoft-Windows-DotNETRuntime:0x1F000080018:5' \
+        "$app")
+    rm -rf "$work/t$n"
+    "$pgo" create-mibc --trace "$work/trace$n.nettrace" --output "$work/p$n.mibc" >/dev/null
+}
+
 n=0
 for doc in "$work"/*.json; do
-    for round in 1 2 3; do
-        n=$((n + 1))
-        mkdir "$work/t$n"
-        (cd "$work/t$n" &&
-            DOTNET_ReadyToRun=0 DOTNET_TieredPGO=1 DOTNET_TieredPGO_InstrumentOnlyHotCode=0 \
-            DOTNET_TC_CallCountThreshold=1 DOTNET_TC_CallCountingDelayMs=0 \
-            DOTNET_EnableEventPipe=1 DOTNET_EventPipeOutputPath="$work/trace$n.nettrace" \
-            DOTNET_EventPipeConfig='Microsoft-Windows-DotNETRuntime:0x1F000080018:5' \
-            "$app" < "$doc")
-        rm -rf "$work/t$n"
-        "$pgo" create-mibc --trace "$work/trace$n.nettrace" --output "$work/p$n.mibc" >/dev/null
-    done
+    # Twice with the file redirected (stdin gets mmapped), once through a pipe (as the benchmark harness does).
+    n=$((n + 1)); profile_run < "$doc"
+    n=$((n + 1)); profile_run < "$doc"
+    n=$((n + 1)); cat "$doc" | profile_run
 done
 "$pgo" merge $(for i in $(seq 1 $n); do printf -- '--input %s ' "$work/p$i.mibc"; done) --output "$here/json2dir-fast.mibc" >/dev/null
 echo "wrote $here/json2dir-fast.mibc from $n runs"

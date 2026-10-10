@@ -30,6 +30,28 @@ Median of 15 runs (after 3 warmups) and max RSS, with `bench/bench.py`, on WSL2 
 
 With stdin redirected from a file (`--stdin file`), the mmap path applies. payload-8MiB then takes 17.8 ms with R2R, 7.0 ms with NativeAOT and 11.3 ms with Rust, all on disk.
 
+### NativeAOT with and without the static PGO profile
+
+ILCompiler gets the same `pgo/json2dir-fast.mibc` (through its `MibcFile` item, i.e. `--mibc`). Its JIT reports
+"with Static PGO" for the hot SIMD scanner and seven other methods; the remaining hot methods get synthesized
+profiles plus PGO data of their inlinees. Each configuration was run twice (`#1`, `#2`) to show the noise;
+same conditions as above, stdin through a pipe:
+
+| storage | workload | AOT #1 | AOT+PGO #1 | AOT #2 | AOT+PGO #2 | R2R+PGO | Rust |
+|---|---|---|---|---|---|---|---|
+| disk | empty | 2.3 ms | 2.2 ms | 2.1 ms | 2.1 ms | 13.3 ms | 1.6 ms |
+| disk | files-1000 | 25.9 ms | 25.4 ms | 26.4 ms | 24.9 ms | 35.9 ms | 25.2 ms |
+| disk | payload-8MiB | 13.8 ms | 12.8 ms | 13.5 ms | 12.9 ms | 25.4 ms | 17.6 ms |
+| tmpfs | empty | 2.2 ms | 2.2 ms | 2.1 ms | 2.1 ms | 12.0 ms | 1.3 ms |
+| tmpfs | files-1000 | 10.3 ms | 10.2 ms | 10.4 ms | 10.3 ms | 21.2 ms | 11.0 ms |
+| tmpfs | payload-8MiB | 15.7 ms | 14.5 ms | 14.1 ms | 14.3 ms | 25.5 ms | 21.1 ms |
+
+With `--stdin file`, payload-8MiB takes 7.3 / 7.1 / 7.2 / 6.7 ms on disk and 8.6 / 8.0 / 8.2 / 8.1 ms on tmpfs.
+RSS is the same with and without the profile: 3 MiB for empty and files-1000, 11 MiB for payload.
+
+Conclusion: the static profile makes no difference beyond noise for NativeAOT, as for R2R. The hot loops are
+already straight-line SIMD code, and the time goes to syscalls and the kernel.
+
 About 10 ms of every R2R run is CoreCLR itself: loading the runtime, CoreLib and type loads. PGO and other runtime knobs barely move it. The NativeAOT build of the same code has no such cost and matches or beats Rust and C.
 
 ## Building
@@ -39,17 +61,19 @@ The build needs the .NET 10 SDK. Restore downloads the linux-x64 runtime pack an
 ```sh
 dotnet publish -c Release -o out                 # R2R + static PGO (the default)
 dotnet publish -c Release -o out-aot -p:PublishAot=true -p:IlcInstructionSet=x86-64-v3 \
-    -p:IntermediateOutputPath=obj/aot/           # NativeAOT variant (needs clang)
+    -p:IntermediateOutputPath=obj/aot/           # NativeAOT + static PGO (needs clang)
 ```
+
+Add `-p:StaticPgo=false` to either command to build without the profile.
 
 Regenerating the PGO profile:
 
 ```sh
 dotnet tool install dotnet-pgo --version 10.0.0-rtm.25531.102 --tool-path ../../runtimes/dotnet-tools \
     --add-source https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet10-transport/nuget/v3/index.json
-rm pgo/json2dir-fast.mibc && dotnet publish -c Release -o out   # build without the old profile
-sh pgo/collect.sh out                            # instrumented runs -> EventPipe traces -> .mibc
-dotnet publish -c Release -o out                 # crossgen2 now uses pgo/json2dir-fast.mibc
+dotnet publish -c Release -o out-nopgo -p:StaticPgo=false   # a build without the old profile
+sh pgo/collect.sh out-nopgo                      # instrumented runs (file and pipe stdin) -> EventPipe traces -> .mibc
+dotnet publish -c Release -o out                 # crossgen2 / ILCompiler now use pgo/json2dir-fast.mibc
 ```
 
 Running the benchmarks:

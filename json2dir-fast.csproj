@@ -41,8 +41,10 @@
     </ItemGroup>
   </Target>
 
-  <!-- Static PGO: the profile collected by pgo/collect.sh guides crossgen2's code layout and inlining. -->
-  <ItemGroup Condition="Exists('pgo/json2dir-fast.mibc')">
+  <!-- Static PGO: the profile collected by pgo/collect.sh guides code layout and inlining, in crossgen2
+       (ReadyToRun) and in ILCompiler (NativeAOT, through its MibcFile item). -p:StaticPgo=false turns it off. -->
+  <ItemGroup Condition="Exists('pgo/json2dir-fast.mibc') and '$(StaticPgo)' != 'false'">
     <PublishReadyToRunPgoFiles Include="pgo/json2dir-fast.mibc" />
+    <MibcFile Include="pgo/json2dir-fast.mibc" Condition="'$(PublishAot)' == 'true'" />
   </ItemGroup>
 </Project>
